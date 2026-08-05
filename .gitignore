@@ -1,0 +1,13 @@
+# W8 Frida CLI runtime files
+config.json
+frida-server
+.frida-server.version
+*.xz
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / OS
+.DS_Store
+*.swp
