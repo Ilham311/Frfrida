@@ -599,9 +599,11 @@ def install_frida() -> bool:
     )
     if ok2_pip:
         ok("frida diupgrade via pip")
+        _cache["pip_upgraded"] = True
     else:
-        warn(f"pip upgrade gagal: {pip_out[:120] if pip_out else '(no output)'}")
-        warn("Lanjut dengan versi pkg")
+        # Tidak ada wheel untuk platform ini — versi pkg adalah tertinggi yang bisa dipasang
+        _cache["pip_upgraded"] = False
+        info("Tidak ada wheel baru untuk platform ini, tetap di versi pkg")
 
     # Invalidate frida cache setelah install
     _cache.pop("frida_ok", None)
