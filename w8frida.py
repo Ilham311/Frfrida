@@ -445,17 +445,17 @@ def _fix_tool_wrappers():
 
 
 def installed_frida_version() -> str:
-    """Ambil versi frida dari pkg show (cepat, tidak spawn Python baru)."""
+    """Ambil versi frida dari Python package (akurat setelah pip upgrade)."""
     if "frida_ver" not in _cache:
-        # Coba frida --version dulu (paling cepat)
-        ver = out(frida_env("frida --version"), timeout=5).strip()
+        # Prioritas: import frida — akurat meski pip upgrade melampaui Termux pkg
+        ver = out(frida_env('python -c "import frida; print(frida.__version__)"'), timeout=10).strip()
+        if not ver or "Error" in ver or "Traceback" in ver:
+            # Fallback: frida --version (bisa stale kalau wrapper pakai binary lama)
+            ver = out(frida_env("frida --version"), timeout=5).strip()
         if not ver or "Error" in ver or "\n" in ver:
-            # Fallback: pkg show
+            # Fallback terakhir: pkg show
             raw = out("pkg show frida-python 2>/dev/null | grep '^Version:'")
             ver = raw.replace("Version:", "").strip()
-        if not ver or "Error" in ver:
-            # Fallback terakhir: import frida
-            ver = out(frida_env('python -c "import frida; print(frida.__version__)"'), timeout=10)
         _cache["frida_ver"] = ver.strip() if ver and "Error" not in ver and "Traceback" not in ver else ""
     return _cache["frida_ver"]
 
@@ -591,9 +591,17 @@ def install_frida() -> bool:
     sh("pkg install -y wget xz-utils python which frida-python")
     # pkg repo Termux sering lagging versi, upgrade via pip agar selalu latest
     info("Mengupgrade frida via pip (PyPI)...")
-    ok2_pip, _ = sh("pip install --upgrade frida 2>&1", timeout=120)
-    if not ok2_pip:
-        warn("pip upgrade gagal, lanjut dengan versi pkg")
+    # --break-system-packages diperlukan di Python 3.11+ (PEP 668)
+    ok2_pip, pip_out = sh(
+        "pip install --upgrade frida --break-system-packages 2>&1 || "
+        "pip install --upgrade frida 2>&1",
+        timeout=120, capture=True
+    )
+    if ok2_pip:
+        ok("frida diupgrade via pip")
+    else:
+        warn(f"pip upgrade gagal: {pip_out[:120] if pip_out else '(no output)'}")
+        warn("Lanjut dengan versi pkg")
 
     # Invalidate frida cache setelah install
     _cache.pop("frida_ok", None)
