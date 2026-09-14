@@ -634,9 +634,11 @@ def install_frida() -> bool:
     if not start_server(force=True):
         warn("Server belum berhasil distart — jalankan: fr start")
 
-    # Refresh cache versi agar _print_version_gap akurat
+    # Hanya tampilkan version gap jika pip berhasil upgrade
+    # (jika tidak ada wheel, versi pkg sudah tertinggi yang bisa dipasang)
     _cache.pop("frida_ver", None)
-    _print_version_gap()
+    if _cache.get("pip_upgraded", True):
+        _print_version_gap()
     ok("Instalasi selesai — jalankan: fr <target>")
     return True
 
