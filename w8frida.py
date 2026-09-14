@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-W8 Frida CLI v3.1  —  Termux Frida SSL Unpinning Toolkit
+W8 Frida CLI v3.2  —  Termux Frida SSL Unpinning Toolkit
 Pemakaian: fr <target> [script.js]
 """
 
@@ -21,7 +21,7 @@ import urllib.request
 # ── Konstanta ──────────────────────────────────────────────────────────────── #
 
 APP_NAME    = "W8 Frida CLI"
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 AUTHOR      = "W8SOJIB / W8Team"
 
 PREFIX    = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
@@ -70,7 +70,14 @@ def load_config() -> dict:
         try:
             with open(CONFIG_FILE) as f:
                 cfg.update(json.load(f))
-        except Exception:
+        except json.JSONDecodeError:
+            # Config rusak — backup dan pakai default
+            try:
+                bak = CONFIG_FILE + ".bak"
+                os.replace(CONFIG_FILE, bak)
+            except OSError:
+                pass
+        except OSError:
             pass
     return cfg
 
@@ -97,7 +104,7 @@ def frida_host() -> str:
 
 class C:
     RST  = "\033[0m";  BOLD = "\033[1m"
-    RED  = "\033[91m"; GRN  = "\033[92m"   # 'm' — bukan ']'
+    RED  = "\033[91m"; GRN  = "\033[92m"
     YLW  = "\033[93m"; CYN  = "\033[96m"
     GRY  = "\033[90m"
 
@@ -131,9 +138,8 @@ def confirm(prompt: str, default: bool = True) -> bool:
 
 
 def banner():
-    # Hanya clear jika berjalan di terminal interaktif
     if sys.stdout.isatty():
-        os.system("clear")
+        subprocess.call(["clear"])
     w = 52
     ln = "=" * w
     def row(t: str, col: str = ""):
@@ -200,7 +206,6 @@ def frida_env(cmd: str) -> str:
     lib = _libpython()
     if not lib:
         return cmd
-    # Gunakan env -S untuk keamanan, fallback ke export inline
     return f'LD_PRELOAD={shlex.quote(lib)} {cmd}'
 
 
@@ -224,10 +229,8 @@ def _tcp_open(host: str, port: int, timeout: float = 1.0) -> bool:
 def frida_server_ok() -> bool:
     """True kalau frida-server merespon di port config."""
     port = int(CONFIG["frida_port"])
-    # Langkah 1: cek TCP (< 100ms) — cepat, tidak spawn proses
     if not _tcp_open("127.0.0.1", port, timeout=1.0):
         return False
-    # Langkah 2: verifikasi dengan frida-ps
     ok2, res = sh(frida_env(f"frida-ps -H {frida_host()}"), timeout=10, capture=True)
     return ok2 and "Unable" not in res and "Failed" not in res
 
@@ -235,28 +238,30 @@ def frida_server_ok() -> bool:
 # ── Deteksi ────────────────────────────────────────────────────────────────── #
 
 def detect_arch() -> str:
-    abi = out("getprop ro.product.cpu.abi")
+    abi = out("getprop ro.product.cpu.abi").strip()
     if "arm64" in abi:        return "android-arm64"
     if abi.startswith("arm"): return "android-arm"
     if "x86_64" in abi:       return "android-x86_64"
-    if abi == "x86":          return "android-x86"
+    if abi == "x86":           return "android-x86"
     err(f"Arsitektur tidak dikenali: {abi!r}")
     return ""
 
 
 def frontmost_package() -> str:
-    raw = su_out("dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | head -1")
+    raw = su_out("dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | head -1")
+    if not raw:
+        return ""
     # Format: ActivityRecord{... com.example.app/.MainActivity ...}
     m = re.search(r'\{[^}]+\s+([a-zA-Z][a-zA-Z0-9_.]+)/\.?[A-Z]', raw)
     if m:
         return m.group(1)
     # Fallback: ambil com.xxx.yyy sebelum '/'
-    m = re.search(r'([a-zA-Z][a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+){1,})/[A-Za-z]', raw)
+    m = re.search(r'([a-zA-Z][a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){1,})/[A-Za-z]', raw)
     return m.group(1) if m else ""
 
 
 def list_packages(use_root: bool = False) -> list:
-    """Daftar paket terpasang. Tidak perlu root untuk pm list packages."""
+    """Daftar paket terpasang."""
     runner = su_out if use_root else out
     for cmd in ("pm list packages -3", "pm list packages", "cmd package list packages"):
         raw = runner(cmd)
@@ -287,18 +292,28 @@ def launch_package(package: str):
     if pid:
         info(f"App sudah berjalan (PID {pid}), tidak perlu launch ulang")
         return
-    # am start dengan action MAIN + category LAUNCHER
-    ok2, _ = su(
-        f"am start -a android.intent.action.MAIN "
-        f"-c android.intent.category.LAUNCHER "
-        f"-n $(pm resolve-activity --components -a android.intent.action.MAIN "
-        f"-c android.intent.category.LAUNCHER {shlex.quote(package)} 2>/dev/null "
-        f"| head -1) 2>/dev/null"
-    )
-    if not ok2:
+
+    # Resolve activity component dulu, baru launch — hindari $() di dalam su -c quoted string
+    pkg_q = shlex.quote(package)
+    component = su_out(
+        f"pm resolve-activity --components -a android.intent.action.MAIN "
+        f"-c android.intent.category.LAUNCHER {pkg_q} 2>/dev/null | head -1"
+    ).strip()
+
+    launched = False
+    if component:
+        comp_q = shlex.quote(component)
+        ok2, _ = su(
+            f"am start -a android.intent.action.MAIN "
+            f"-c android.intent.category.LAUNCHER -n {comp_q} 2>/dev/null"
+        )
+        launched = ok2
+
+    if not launched:
         # Fallback: am start langsung dengan package
         su(f"am start -a android.intent.action.MAIN "
-           f"-c android.intent.category.LAUNCHER {shlex.quote(package)}")
+           f"-c android.intent.category.LAUNCHER {pkg_q} 2>/dev/null")
+
     time.sleep(1.5)
 
 
@@ -417,7 +432,7 @@ def _fix_tool_wrappers():
         warn("libpython tidak ditemukan, skip wrapper fix")
         return
     for tool in FRIDA_TOOLS:
-        path = shutil.which(tool) or out(f"command -v {tool}").strip()
+        path = shutil.which(tool)
         if not path or not os.path.isfile(path):
             continue
         real = path + ".real"
@@ -444,19 +459,29 @@ def _fix_tool_wrappers():
             warn(f"Gagal fix wrapper {tool}: {e}")
 
 
+def _clean_ver(ver: str) -> str:
+    """Ambil baris pertama, strip whitespace — hindari multiline dari pkg show."""
+    if not ver:
+        return ""
+    return ver.strip().splitlines()[0].strip()
+
+
 def installed_frida_version() -> str:
     """Ambil versi frida dari Python package (akurat setelah pip upgrade)."""
     if "frida_ver" not in _cache:
         # Prioritas: import frida — akurat meski pip upgrade melampaui Termux pkg
-        ver = out(frida_env('python -c "import frida; print(frida.__version__)"'), timeout=10).strip()
+        ver = out(frida_env('python -c "import frida; print(frida.__version__)"'), timeout=10)
+        ver = _clean_ver(ver)
         if not ver or "Error" in ver or "Traceback" in ver:
-            # Fallback: frida --version (bisa stale kalau wrapper pakai binary lama)
-            ver = out(frida_env("frida --version"), timeout=5).strip()
-        if not ver or "Error" in ver or "\n" in ver:
+            # Fallback: frida --version
+            ver = _clean_ver(out(frida_env("frida --version"), timeout=5))
+        if not ver or "Error" in ver:
             # Fallback terakhir: pkg show
             raw = out("pkg show frida-python 2>/dev/null | grep '^Version:'")
-            ver = raw.replace("Version:", "").strip()
-        _cache["frida_ver"] = ver.strip() if ver and "Error" not in ver and "Traceback" not in ver else ""
+            ver = _clean_ver(raw.replace("Version:", ""))
+        if ver and ("Error" in ver or "Traceback" in ver):
+            ver = ""
+        _cache["frida_ver"] = ver
     return _cache["frida_ver"]
 
 
@@ -465,9 +490,14 @@ def latest_frida_version() -> str:
     if "latest_ver" not in _cache:
         try:
             api = "https://api.github.com/repos/frida/frida/releases/latest"
-            req = urllib.request.Request(api, headers={"User-Agent": "w8frida/3.1"})
+            req = urllib.request.Request(api, headers={"User-Agent": f"w8frida/{APP_VERSION}"})
             data = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
-            _cache["latest_ver"] = data["tag_name"].lstrip("v")
+            tag = data.get("tag_name", "").lstrip("v").strip()
+            # Validasi format versi: harus berupa angka.angka.angka
+            if re.match(r'^\d+\.\d+\.\d+$', tag):
+                _cache["latest_ver"] = tag
+            else:
+                _cache["latest_ver"] = ""
         except Exception:
             _cache["latest_ver"] = ""
     return _cache["latest_ver"]
@@ -479,6 +509,9 @@ def target_version() -> str:
 
 
 def _server_urls(ver: str, fname: str) -> list:
+    # Validasi format versi sebelum masuk ke URL
+    if not re.match(r'^[\d.]+$', ver):
+        return []
     rel = f"frida/frida/releases/download/{ver}/{fname}"
     return [
         "https://github.com/" + rel,
@@ -512,10 +545,14 @@ def download_frida_server(force: bool = False) -> bool:
     tmp_bin = tmp_xz[:-3]
 
     step(f"Mengunduh frida-server {ver} ({arch})")
+    urls = _server_urls(ver, fname)
+    if not urls:
+        err(f"Format versi tidak valid: {ver!r}")
+        return False
+
     downloaded = False
-    for url in _server_urls(ver, fname):
+    for url in urls:
         info(f"Mencoba: {url}")
-        # --progress=bar:force agar progress bar tampil, tanpa noise verbose
         ok2, _ = sh(f"wget --progress=bar:force -O {shlex.quote(tmp_xz)} {shlex.quote(url)} 2>&1")
         if ok2 and os.path.exists(tmp_xz) and os.path.getsize(tmp_xz) > 100_000:
             downloaded = True
@@ -558,10 +595,11 @@ def _push_frida_server() -> bool:
         err("frida-server binary tidak ada di W8_HOME")
         return False
     src = shlex.quote(os.path.abspath(SERVER_BIN))
+    dst = shlex.quote(os.path.join(LOCAL_TMP, "frida-server"))
     ok2, msg = su(
-        f"mkdir -p {LOCAL_TMP} && "
-        f"cp {src} {LOCAL_TMP}/frida-server && "
-        f"chmod 755 {LOCAL_TMP}/frida-server",
+        f"mkdir -p {shlex.quote(LOCAL_TMP)} && "
+        f"cp {src} {dst} && "
+        f"chmod 755 {dst}",
         capture=True
     )
     if not ok2:
@@ -571,7 +609,8 @@ def _push_frida_server() -> bool:
 
 def _print_version_gap():
     cur    = installed_frida_version()
-    latest = latest_frida_version()  # sudah cached dari target_version()
+    latest = latest_frida_version()
+    # Hanya tampilkan jika kedua versi valid dan berbeda
     if cur and latest and cur != latest:
         warn(f"Client v{cur}, terbaru v{latest} — jalankan 'fr install' untuk update")
 
@@ -584,31 +623,38 @@ def install_frida() -> bool:
         return False
 
     step("Menyiapkan paket Termux")
-    # Hanya update index, TIDAK upgrade semua paket (menghindari gangguan)
     sh("pkg update -y 2>/dev/null || true")
     sh("pkg install root-repo -y 2>/dev/null || true")
     sh("pkg update -y 2>/dev/null || true")
     sh("pkg install -y wget xz-utils python which frida-python")
-    # pkg repo Termux sering lagging versi, upgrade via pip agar selalu latest
+
+    # Catat versi sebelum upgrade untuk deteksi apakah benar-benar naik
+    _cache.pop("frida_ver", None)
+    ver_before = installed_frida_version()
+
     info("Mengupgrade frida via pip (PyPI)...")
-    # --break-system-packages diperlukan di Python 3.11+ (PEP 668)
     ok2_pip, pip_out = sh(
         "pip install --upgrade frida --break-system-packages 2>&1 || "
         "pip install --upgrade frida 2>&1",
         timeout=120, capture=True
     )
-    if ok2_pip:
-        ok("frida diupgrade via pip")
-        _cache["pip_upgraded"] = True
-    else:
-        # Tidak ada wheel untuk platform ini — versi pkg adalah tertinggi yang bisa dipasang
-        _cache["pip_upgraded"] = False
-        info("Tidak ada wheel baru untuk platform ini, tetap di versi pkg")
 
-    # Invalidate frida cache setelah install
+    # Invalidate frida cache setelah pip jalan
     _cache.pop("frida_ok", None)
     _cache.pop("frida_ver", None)
     _cache.pop("libpython", None)
+
+    if ok2_pip:
+        ver_after = installed_frida_version()
+        # pip upgraded = versi benar-benar naik (bukan sekedar exit 0 "already satisfied")
+        pip_upgraded = bool(ver_after and ver_before != ver_after)
+        if pip_upgraded:
+            ok(f"frida diupgrade via pip: {ver_before or '?'} → {ver_after}")
+        else:
+            ok("frida via pip sudah di versi terkini")
+    else:
+        pip_upgraded = False
+        info("Tidak ada wheel baru untuk platform ini, tetap di versi pkg")
 
     _fix_tool_wrappers()
     if not frida_ok():
@@ -634,11 +680,11 @@ def install_frida() -> bool:
     if not start_server(force=True):
         warn("Server belum berhasil distart — jalankan: fr start")
 
-    # Hanya tampilkan version gap jika pip berhasil upgrade
-    # (jika tidak ada wheel, versi pkg sudah tertinggi yang bisa dipasang)
-    _cache.pop("frida_ver", None)
-    if _cache.get("pip_upgraded", True):
+    # Tampilkan version gap hanya jika pip benar-benar upgrade terjadi
+    # DAN latest_ver berhasil diambil (tidak kosong karena network error)
+    if pip_upgraded:
         _print_version_gap()
+
     ok("Instalasi selesai — jalankan: fr <target>")
     return True
 
@@ -663,7 +709,7 @@ def start_server(force: bool = False) -> bool:
     if not _push_frida_server():
         return False
 
-    # Tentukan port dan nama sebelum kill (agar tidak kill diri sendiri)
+    # Tentukan port dan nama sebelum kill
     if stealth_on():
         if CONFIG.get("random_port", True):
             CONFIG["frida_port"] = pick_port()
@@ -671,26 +717,30 @@ def start_server(force: bool = False) -> bool:
     save_config()
 
     name   = CONFIG["server_name"]
-    target = f"{LOCAL_TMP}/{name}"
+    target = os.path.join(LOCAL_TMP, name)
     label  = "frida-server (stealth)" if stealth_on() else "frida-server"
 
     step(f"Menjalankan {label} sebagai {C.BOLD}{name}{C.RST} @ port {CONFIG['frida_port']}")
     _kill_old_server()
-    time.sleep(0.3)  # beri waktu proses lama benar-benar mati
+    time.sleep(0.3)
 
+    src_bin = shlex.quote(os.path.join(LOCAL_TMP, "frida-server"))
+    dst_bin = shlex.quote(target)
     ok2, msg = su(
-        f"cp -f {LOCAL_TMP}/frida-server {shlex.quote(target)} && "
-        f"chmod 755 {shlex.quote(target)} && "
-        f"rm -f {LOCAL_TMP}/frida-server",
+        f"cp -f {src_bin} {dst_bin} && "
+        f"chmod 755 {dst_bin} && "
+        f"rm -f {src_bin}",
         capture=True
     )
     if not ok2:
         err(f"Gagal menyiapkan binary server: {msg}")
         return False
 
+    # Jalankan server — target dan host harus di-quote agar aman
+    server_cmd = f"{shlex.quote(target)} -l {frida_host()}"
     try:
         subprocess.Popen(
-            ["su", "-c", f"{target} -l {frida_host()}"],
+            ["su", "-c", server_cmd],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -699,14 +749,12 @@ def start_server(force: bool = False) -> bool:
         err(f"Gagal start: {e}")
         return False
 
-    # Tunggu pakai TCP check (cepat), bukan frida-ps (lambat)
     info("Menunggu server siap...")
     port = int(CONFIG["frida_port"])
     deadline = time.time() + 15
     while time.time() < deadline:
         time.sleep(0.5)
         if _tcp_open("127.0.0.1", port, timeout=0.5):
-            # Konfirmasi sekali dengan frida-ps
             time.sleep(0.3)
             if frida_server_ok():
                 ok(f"frida-server berjalan (port {port})")
@@ -727,9 +775,9 @@ def ensure_server() -> bool:
 def stop_server():
     _kill_old_server()
     name = CONFIG.get("server_name", "")
-    targets = [f"{LOCAL_TMP}/frida-server"]
+    targets = [os.path.join(LOCAL_TMP, "frida-server")]
     if name:
-        targets.append(f"{LOCAL_TMP}/{name}")
+        targets.append(os.path.join(LOCAL_TMP, name))
     rm_list = " ".join(shlex.quote(t) for t in targets)
     su(f"rm -f {rm_list} 2>/dev/null; true")
     ok("frida-server dihentikan")
@@ -852,7 +900,6 @@ def _require_root_frida() -> bool:
         info("Frida belum terpasang, memulai instalasi otomatis...")
         if not install_frida():
             return False
-        # Refresh cache setelah install
         _cache.pop("frida_ok", None)
     return True
 
@@ -871,7 +918,7 @@ def cli_run(rest: list, spawn: bool = False):
     if not package:
         return
 
-    scripts = available_scripts()  # ambil sekali, reuse
+    scripts = available_scripts()
     script  = resolve_script(rest[1] if len(rest) > 1 else "", scripts)
     if not script:
         err("Tidak ada script .js ditemukan.")
@@ -881,9 +928,12 @@ def cli_run(rest: list, spawn: bool = False):
 
 
 def cli_status():
-    cur = installed_frida_version()
+    cur    = installed_frida_version()
+    latest = latest_frida_version()
     info(f"{APP_NAME} v{APP_VERSION}")
     info(f"Frida client : {cur or '(belum terpasang)'}")
+    if cur and latest and cur != latest:
+        info(f"Terbaru      : {latest} (jalankan 'fr install' untuk update)")
     info(f"Port         : {CONFIG['frida_port']}")
     info(f"Server name  : {CONFIG['server_name']}")
     info(f"Stealth      : {'ON' if CONFIG.get('stealth', True) else 'OFF'}")
@@ -964,7 +1014,7 @@ def quick_start():
     if fw:
         info(f"Framework terdeteksi: {', '.join(fw)}")
 
-    scripts = available_scripts()  # ambil sekali
+    scripts = available_scripts()
     if not scripts:
         err(f"Tidak ada script .js di folder ini / {SCRIPTS_HOME}")
         return
@@ -1071,7 +1121,7 @@ def uninstall_frida():
         return
     stop_server()
     for tool in FRIDA_TOOLS:
-        path = shutil.which(tool) or out(f"command -v {tool}").strip()
+        path = shutil.which(tool)
         if not path:
             continue
         real = path + ".real"
