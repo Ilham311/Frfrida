@@ -589,6 +589,11 @@ def install_frida() -> bool:
     sh("pkg install root-repo -y 2>/dev/null || true")
     sh("pkg update -y 2>/dev/null || true")
     sh("pkg install -y wget xz-utils python which frida-python")
+    # pkg repo Termux sering lagging versi, upgrade via pip agar selalu latest
+    info("Mengupgrade frida via pip (PyPI)...")
+    ok2_pip, _ = sh("pip install --upgrade frida 2>&1", timeout=120)
+    if not ok2_pip:
+        warn("pip upgrade gagal, lanjut dengan versi pkg")
 
     # Invalidate frida cache setelah install
     _cache.pop("frida_ok", None)
@@ -611,6 +616,16 @@ def install_frida() -> bool:
     if not _push_frida_server():
         return False
 
+    # Restart server agar versi baru aktif
+    if frida_server_ok():
+        info("Server lama terdeteksi, merestart dengan versi baru...")
+        stop_server()
+        time.sleep(0.5)
+    if not start_server(force=True):
+        warn("Server belum berhasil distart — jalankan: fr start")
+
+    # Refresh cache versi agar _print_version_gap akurat
+    _cache.pop("frida_ver", None)
     _print_version_gap()
     ok("Instalasi selesai — jalankan: fr <target>")
     return True
