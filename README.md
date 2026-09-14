@@ -1,102 +1,83 @@
-# Frfrida — W8 Frida CLI v2.1
+# Frfrida — W8 Frida CLI v3.1
 
-Termux Frida SSL Unpinning Toolkit dengan **CLI simpel** (`fr <target> <script.js>`), **server auto-detect** (tidak restart kalau sudah jalan), dan **stealth** (port acak + nama proses menyamar daemon).
+Termux Frida SSL Unpinning Toolkit dengan CLI simpel (`fr <target> [script.js]`).
 
-> ⚠️ **Disclaimer:** Alat ini hanya untuk **pengujian keamanan pada aplikasi yang kamu miliki atau punya izin uji**. Butuh perangkat **root** (Magisk). Segala penyalahgunaan di luar tanggung jawab pembuat.
-
----
-
-## ✨ Fitur
-
-- **Server pintar (anti restart).** Sebelum attach, tool cek `frida-ps` dulu. Kalau server sudah aktif → langsung dipakai; kalau mati → start otomatis sekali. Tidak perlu start/stop manual.
-- **CLI ringkas.** `fr com.aplikasi script.js` — nama paket & script boleh disingkat (auto-match), script boleh dikosongkan (pakai yang terbaru).
-- **Versi selalu cocok.** `frida-server` otomatis disamakan dengan versi `frida` client + cache per-versi + mirror unduhan.
-- **Stealth (default ON).** Port acak per sesi (hindari 27042/27043) + nama proses samaran (mis. `.logd-aux`).
-- **Load `.js` langsung dari Termux** via `-l` (tidak menyalin ke `/data/local/tmp`).
+> **Disclaimer:** Hanya untuk pengujian keamanan pada aplikasi yang kamu miliki atau punya izin uji. Butuh perangkat **root** (Magisk).
 
 ---
 
-## 🚀 Instalasi (1 perintah)
-
-```bash
-pkg install curl -y && curl -fsSL https://raw.githubusercontent.com/Ilham311/Frfrida/main/install.sh | bash
-```
-
-Atau pakai `wget` (bawaan Termux):
+## Instalasi (1 perintah, selesai langsung)
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/Ilham311/Frfrida/main/install.sh | bash
 ```
 
-Setelah itu:
+Installer langsung:
+- Install semua paket yang dibutuhkan
+- Daftarkan perintah `fr` secara global
+- Install frida-server yang cocok dengan versi client
 
-```bash
-source ~/.bashrc
-fr install          # pasang Frida client + server (sekali di awal)
-```
+Setelah selesai, langsung bisa pakai tanpa restart Termux.
 
 ---
 
-## 📖 Pemakaian
+## Pemakaian
+
+```bash
+fr com.example.app          # bypass pakai script default (terbaru di folder ini)
+fr tokopedia ssl.js         # nama paket & script boleh disingkat
+fr spawn com.bank bypass.js # mode spawn (launch app baru)
+fr --help                   # semua perintah
+```
 
 | Perintah | Fungsi |
 |---|---|
-| `fr <target> [script.js]` | Jalankan bypass (attach). Server auto-start bila mati, **tidak restart** kalau sudah jalan. |
-| `fr spawn <target> [script]` | Bypass mode spawn (launch baru). |
-| `fr start` / `fr stop` / `fr restart` | `start` hanya menyalakan bila mati; `restart` paksa nyalakan ulang. |
-| `fr status` | Versi Frida, port, nama server, status aktif/mati. |
-| `fr install` / `fr update` | Install/Update Frida (server disamakan versinya dengan client). |
-| `fr list [filter]` | Daftar paket terpasang (bisa difilter). |
+| `fr <target> [script.js]` | Bypass (attach). Server auto-start bila mati, tidak restart kalau sudah jalan. |
+| `fr spawn <target> [script]` | Bypass mode spawn. |
+| `fr start` / `fr stop` / `fr restart` | Kelola server. |
+| `fr status` | Versi Frida, port, nama server, status. |
+| `fr install` / `fr update` | Install/Update Frida (client + server disamakan). |
+| `fr list [filter]` | Daftar paket terpasang. |
 | `fr scripts` | Daftar script `.js` yang terdeteksi. |
-| `fr front` | Paket aplikasi yang sedang di depan layar. |
-| `fr menu` | Menu interaktif klasik. |
-
-### Contoh
-
-```bash
-cd ~/scripts-ssl            # folder berisi file .js kamu
-fr com.example.app         # pakai script terbaru otomatis
-fr tokopedia ssl.js        # nama paket & script boleh disingkat
-fr spawn com.bank bypass.js
-```
+| `fr front` | Paket app yang sedang di depan layar. |
+| `fr menu` | Menu interaktif. |
 
 Script `.js` dibaca dari **folder saat ini** dan dari `~/.w8frida/scripts`.
 
 ---
 
-## 🕵️ Stealth
+## Fitur
 
-Default ON. Bisa dimatikan lewat `fr menu` → Pengaturan bila ada masalah kompatibilitas:
-
-- **Port acak per sesi** — hindari default Frida `27042`/`27043` yang gampang di-scan.
-- **Nama proses samaran** — biner dijalankan sebagai `.logd-aux`, `.kworkerd`, dll. Nama asli `frida-server` di `/data/local/tmp` langsung dihapus setelah disalin.
-
-> Untuk stealth string/simbol tingkat lanjut, pakai `frida-server` hasil rebuild (strongR-frida / hluda) yang versinya dicocokkan manual dengan client.
+- **Server pintar** — cek dulu sebelum start; tidak restart kalau sudah jalan.
+- **Versi selalu cocok** — frida-server disamakan otomatis dengan versi client.
+- **Stealth (default ON)** — port acak per sesi + nama proses menyamar daemon.
+- **Fuzzy match** — nama paket & script boleh disingkat.
+- **Mirror download** — fallback ke gh-proxy bila GitHub lambat.
 
 ---
 
-## 📁 Struktur repo
+## Requirement
 
-```text
+- Termux (dari F-Droid atau GitHub, **bukan** Play Store)
+- Perangkat **root** (Magisk)
+- Python + `frida-python` (dipasang otomatis oleh installer)
+
+---
+
+## Struktur repo
+
+```
 Frfrida/
 ├── w8frida.py        # CLI utama
 ├── install.sh        # installer 1 perintah
 ├── README.md
 ├── LICENSE
 └── scripts/
-    └── bypass.js     # contoh script SSL unpinning multi-framework
+    └── bypass.js     # contoh SSL unpinning multi-framework
 ```
 
 ---
 
-## 🛠️ Requirement
+## Lisensi
 
-- Termux (disarankan dari F-Droid/GitHub, bukan Play Store)
-- Perangkat **root** (Magisk)
-- Python + `frida-python` (dipasang otomatis oleh installer)
-
----
-
-## 📝 Lisensi
-
-MIT — lihat berkas [LICENSE](LICENSE).
+MIT — lihat [LICENSE](LICENSE).
